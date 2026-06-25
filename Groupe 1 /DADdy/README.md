@@ -1,12 +1,14 @@
 # DADdy
 
-Monorepo full-stack avec:
-- Frontend: Vite + React dans `apps/breezy-web`
+Monorepo full-stack du projet **Breezy** avec:
+- Frontend web: Vite + React dans `apps/breezy-web`
+- Application mobile: Capacitor (iOS/Android) dans `apps/breezy-mobile`
 - Backend: Go microservices dans `apps/breezy-api`
 	- `api-gateway`
 	- `core-api`
 	- `user-service`
 	- `auth-service`
+- Code partage: `packages/breezy-shared` (`@breezy/shared`)
 
 ## Prerequisites
 
@@ -59,6 +61,22 @@ Cela lance:
 - Web (Vite)
 - API (gateway + core-api + user-service + auth-service)
 
+### Seed des donnees de demo
+
+```bash
+npm run seed
+```
+
+### Application mobile (Capacitor)
+
+Build du web + sync natif, puis ouverture du projet iOS/Android:
+
+```bash
+npm run cap:sync --workspace=apps/breezy-mobile
+npm run cap:ios --workspace=apps/breezy-mobile
+npm run cap:android --workspace=apps/breezy-mobile
+```
+
 ## Scripts utiles
 
 Racine:
@@ -101,6 +119,13 @@ Base URL locale: `http://localhost:3001`
 - `POST /auth/login`
 - `GET /auth/me` (Bearer JWT)
 - `GET /users` (Bearer JWT)
+
+## Deploiement
+
+- Conteneurs: voir `compose.yaml` (et `compose.override.yaml` pour le dev).
+- Kubernetes: manifests Kustomize + ArgoCD dans `.kubernetes/` (cf. `.kubernetes/README.md`).
+- Provisioning: playbooks Ansible dans `ansible/` (cf. `ansible/README.md`).
+- CI/CD: workflows GitHub Actions dans `.github/workflows/`.
 
 ## Notes
 

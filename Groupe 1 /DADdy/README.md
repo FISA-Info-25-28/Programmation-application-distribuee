@@ -1,14 +1,31 @@
 # DADdy
 
-Monorepo full-stack du projet **Breezy** avec:
+Monorepo full-stack du projet **Breezy** (reseau social type microblogging).
+
+## Architecture
+
 - Frontend web: Vite + React dans `apps/breezy-web`
 - Application mobile: Capacitor (iOS/Android) dans `apps/breezy-mobile`
-- Backend: Go microservices dans `apps/breezy-api`
-	- `api-gateway`
-	- `core-api`
-	- `user-service`
-	- `auth-service`
 - Code partage: `packages/breezy-shared` (`@breezy/shared`)
+- Backend: Go microservices dans `apps/breezy-api`
+
+| Service | Port | Role |
+|---|---|---|
+| `api-gateway` | 3001 | Point d'entree unique: verif JWT, rate-limiting (Valkey), CORS, routage |
+| `core-api` | 3101 | Endpoints transverses / sante |
+| `user-service` | 3102 | Profils, follows, demandes de suivi, avatars/bannieres |
+| `post-service` | 3103 | Posts, feed, likes, commentaires, hashtags |
+| `auth-service` | 3104 | Inscription/connexion, JWT, OAuth, verif email, reset mdp, MFA |
+| `message-service` | 3105 | Messages prives (chiffres au repos) |
+| `notification-service` | 3106 | Notifications |
+
+Infra:
+- PostgreSQL (une base par service): core `5433`, user `5434`, auth `5435`, post `5436`, message `5437`, notif `5438`
+- MinIO: stockage des medias/avatars (`9000` API, `9001` console)
+- Valkey: cache / rate-limiting du gateway
+- Swagger UI (spec API): `8081`
+- pgAdmin: `8080`
+- Mailpit (dev uniquement): capture des mails, UI sur `8025`
 
 ## Prerequisites
 
@@ -42,11 +59,14 @@ npm run compose -- up --build
 Services exposes:
 - Web: `http://localhost:5173`
 - API Gateway: `http://localhost:3001`
-- Swagger UI (spec brute): `http://localhost:8081`
+- Swagger UI: `http://localhost:8081`
+- pgAdmin: `http://localhost:8080`
+- MinIO console: `http://localhost:9001`
+- Mailpit (mails de dev): `http://localhost:8025`
 
 ### Option B: lancer en local via npm workspaces
 
-Cette option demarre automatiquement les bases Postgres locales (Docker/Podman):
+Cette option demarre automatiquement les bases Postgres core/user/auth locales (Docker/Podman):
 - `core-db` sur `localhost:5433`
 - `user-db` sur `localhost:5434`
 - `auth-db` sur `localhost:5435`
@@ -59,7 +79,11 @@ npm run dev
 
 Cela lance:
 - Web (Vite)
-- API (gateway + core-api + user-service + auth-service)
+- API (gateway + tous les microservices)
+
+> Note: les services `post`, `message` et `notification` necessitent leurs bases
+> (`post-db`, `msg-db`, `notif-db`), MinIO et le cache. Pour une stack complete,
+> preferer l'Option A.
 
 ### Seed des donnees de demo
 
@@ -84,8 +108,9 @@ Racine:
 ```bash
 npm run dev
 npm run build
-npm run lint
-npm run build:docs
+npm run lint        # eslint (web) + go vet (api)
+npm run seed
+npm run build:docs  # Swagger API + TypeDoc web + page d'accueil docs
 ```
 
 Web:
@@ -107,18 +132,31 @@ npm run start --workspace=apps/breezy-api
 ## Variables d'environnement
 
 Voir `.env.example` pour la liste complete:
-- Databases: core, user, auth
-- JWT: `JWT_SECRET`, `JWT_ISSUER`
+- Bases de donnees: core, user, auth, post, message, notif
+- JWT: `JWT_SECRET`, `JWT_ISSUER`, rotation de cles, TTL access/refresh
+- `INTERNAL_API_KEY`: appels internes entre services
+- MinIO: identifiants, bucket, URL publique
+- Valkey: `VALKEY_PASSWORD`, limites de rate-limiting
+- Email (SMTP) + verification / reset de mot de passe
+- OAuth2: Google et GitHub
+- `MESSAGE_ENCRYPTION_KEY`: chiffrement des messages prives
 
 ## Endpoints principaux (via gateway)
 
 Base URL locale: `http://localhost:3001`
 
 - `GET /health`
-- `POST /auth/register`
-- `POST /auth/login`
-- `GET /auth/me` (Bearer JWT)
-- `GET /users` (Bearer JWT)
+- **Auth** `/auth/*`: `register`, `login`, `logout`, `refresh`, `me`, `verify-email`,
+  `resend-verification`, `request-password-reset`, `reset-password`, `change-password`,
+  `mfa/setup|confirm|verify`, `oauth/google`, `oauth/github`
+- **Users** `/users/*`: liste, `{id}`, `follow`, `followers`, `following`, `me`,
+  `me/avatar`, `me/banner`, `me/follow-requests`, `suggestions`
+- **Posts** `/posts/*`: `posts`, `{id}`, `{id}/like`, `{id}/comments`, `for-you`,
+  `feed`, `hashtags/trending`
+- **Notifications**: `GET /notifications`
+- **Messages**: messagerie privee via `message-service`
+
+Routes protegees: header `Authorization: Bearer <JWT>`.
 
 ## Deploiement
 

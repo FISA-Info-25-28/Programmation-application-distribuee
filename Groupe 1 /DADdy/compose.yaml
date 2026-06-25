@@ -1,0 +1,663 @@
+services:
+  swagger-ui:
+    image: swaggerapi/swagger-ui:v5.32.6
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      SWAGGER_JSON: /spec/openapi.yaml
+    volumes:
+      - ./apps/breezy-api/spec/openapi.yaml:/spec/openapi.yaml:ro
+    networks:
+      - edge
+
+  # ───────────────────────── core ─────────────────────────
+  core-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${CORE_POSTGRES_USER:-core_user}
+      POSTGRES_PASSWORD: ${CORE_POSTGRES_PASSWORD:-change-me-core}
+      POSTGRES_DB: ${CORE_POSTGRES_DB:-core}
+    ports:
+      - "5433:5432"
+    volumes: 
+      - core-db-data:/var/lib/postgresql/data
+    networks:
+      - core-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CORE_POSTGRES_USER:-core_user} -d ${CORE_POSTGRES_DB:-core}"]
+      interval: 5s
+      timeout: 5s   
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
+  core-api:
+    build:
+      context: ./apps/breezy-api
+      args:
+        SERVICE: core-api
+    restart: unless-stopped
+    environment:
+      PORT: "3101"
+      CORE_DATABASE_URL: postgres://${CORE_POSTGRES_USER:-core_user}:${CORE_POSTGRES_PASSWORD:-change-me-core}@core-db:5432/${CORE_POSTGRES_DB:-core}?sslmode=disable
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+    depends_on:
+      core-db:
+        condition: service_healthy
+    networks:
+      - app-net
+      - core-net
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  # ───────────────────────── user ─────────────────────────
+  user-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${USER_POSTGRES_USER:-user_user}
+      POSTGRES_PASSWORD: ${USER_POSTGRES_PASSWORD:-change-me-user}
+      POSTGRES_DB: ${USER_POSTGRES_DB:-users}
+    ports:
+      - "5434:5432"
+    volumes:
+      - user-db-data:/var/lib/postgresql/data
+    networks:
+      - user-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${USER_POSTGRES_USER:-user_user} -d ${USER_POSTGRES_DB:-users}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
+  user-service:
+    build:
+      context: ./apps/breezy-api
+      args:
+        SERVICE: user-service
+    restart: unless-stopped
+    environment:
+      PORT: "3102"
+      APP_ENV: ${APP_ENV:-development}
+      USER_DATABASE_URL: postgres://${USER_POSTGRES_USER:-user_user}:${USER_POSTGRES_PASSWORD:-change-me-user}@user-db:5432/${USER_POSTGRES_DB:-users}?sslmode=disable
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      NOTIF_SERVICE_URL: http://notif-service:3106
+      AUTH_SERVICE_URL: http://auth-service:3104
+      POST_SERVICE_URL: http://post-service:3103
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-breezy-media}
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-http://localhost:9000}
+    depends_on:
+      user-db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      notif-service:
+        condition: service_healthy
+    networks:
+      - app-net
+      - user-net
+      - post-net
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  # ───────────────────────── auth ─────────────────────────
+  auth-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${AUTH_POSTGRES_USER:-auth_user}
+      POSTGRES_PASSWORD: ${AUTH_POSTGRES_PASSWORD:-change-me-auth}
+      POSTGRES_DB: ${AUTH_POSTGRES_DB:-auth}
+    ports:
+      - "5435:5432"
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+    networks:
+      - auth-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AUTH_POSTGRES_USER:-auth_user} -d ${AUTH_POSTGRES_DB:-auth}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
+  auth-service:
+    build:
+      context: ./apps/breezy-api
+      args:
+        SERVICE: auth-service
+    restart: unless-stopped
+    environment:
+      PORT: "3104"
+      APP_ENV: ${APP_ENV:-development}
+      AUTH_DATABASE_URL: postgres://${AUTH_POSTGRES_USER:-auth_user}:${AUTH_POSTGRES_PASSWORD:-change-me-auth}@auth-db:5432/${AUTH_POSTGRES_DB:-auth}?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_PREVIOUS_SECRET: ${JWT_PREVIOUS_SECRET:-}
+      JWT_ISSUER: ${JWT_ISSUER}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-daddy-api}
+      JWT_ALG: ${JWT_ALG:-HS256}
+      JWT_ACTIVE_KID: ${JWT_ACTIVE_KID:-v1}
+      JWT_PRIVATE_KEY_PATH: ${JWT_PRIVATE_KEY_PATH:-}
+      ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-15}
+      REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
+      USER_SERVICE_URL: http://user-service:3102
+      CORE_API_URL: http://core-api:3101
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      VALKEY_ADDR: cache:6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+      # Vérification email. SMTP_HOST vide => mailer en mode log (pas d'envoi réel).
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-Breezy <no-reply@breezy.local>}
+      APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
+      EMAIL_VERIFICATION_TTL_HOURS: ${EMAIL_VERIFICATION_TTL_HOURS:-24}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+    depends_on:
+      auth-db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    networks:
+      - app-net
+      - auth-net
+      - cache-net
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  # ───────────────────────── minio ────────────────────────
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+    networks:
+      - post-net
+      - edge
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local 2>/dev/null || curl -sf http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    restart: on-failure
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - post-net
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin};
+        mc mb --ignore-existing local/$${MINIO_BUCKET:-breezy-media};
+        mc anonymous set download local/$${MINIO_BUCKET:-breezy-media};
+        echo 'MinIO bucket ready';
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-breezy-media}
+
+  # ─────────────────── notification ──────────────────
+  notif-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${NOTIF_POSTGRES_USER:-notif_user}
+      POSTGRES_PASSWORD: ${NOTIF_POSTGRES_PASSWORD:-change-me-notif}
+      POSTGRES_DB: ${NOTIF_POSTGRES_DB:-notifications}
+    ports:
+      - "5438:5432"
+    volumes:
+      - notif-db-data:/var/lib/postgresql/data
+    networks:
+      - notif-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NOTIF_POSTGRES_USER:-notif_user} -d ${NOTIF_POSTGRES_DB:-notifications}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
+  notif-service:
+    build:
+      context: ./apps/breezy-api
+      args:
+        SERVICE: notification-service
+    restart: unless-stopped
+    environment:
+      PORT: "3106"
+      NOTIF_DATABASE_URL: postgres://${NOTIF_POSTGRES_USER:-notif_user}:${NOTIF_POSTGRES_PASSWORD:-change-me-notif}@notif-db:5432/${NOTIF_POSTGRES_DB:-notifications}?sslmode=disable
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+    depends_on:
+      notif-db:
+        condition: service_healthy
+    networks:
+      - app-net
+      - notif-net
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  # ─────────────────────── message ────────────────────────
+  msg-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${MSG_POSTGRES_USER:-msg_user}
+      POSTGRES_PASSWORD: ${MSG_POSTGRES_PASSWORD:-change-me-msg}
+      POSTGRES_DB: ${MSG_POSTGRES_DB:-messages}
+    ports:
+      - "5437:5432"
+    volumes:
+      - msg-db-data:/var/lib/postgresql/data
+    networks:
+      - msg-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MSG_POSTGRES_USER:-msg_user} -d ${MSG_POSTGRES_DB:-messages}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
+  message-service:
+    build:
+      context: ./apps/breezy-api
+      args:
+        SERVICE: message-service
+    restart: unless-stopped
+    environment:
+      PORT: "3105"
+      MSG_DATABASE_URL: postgres://${MSG_POSTGRES_USER:-msg_user}:${MSG_POSTGRES_PASSWORD:-change-me-msg}@msg-db:5432/${MSG_POSTGRES_DB:-messages}?sslmode=disable
+      NOTIF_SERVICE_URL: http://notif-service:3106
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+      MESSAGE_ENCRYPTION_KEY: ${MESSAGE_ENCRYPTION_KEY:-dev-message-encryption-key}
+    depends_on:
+      msg-db:
+        condition: service_healthy
+      notif-service:
+        condition: service_healthy
+    networks:
+      - app-net
+      - msg-net
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  # ───────────────────────── post ─────────────────────────
+  post-db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POST_POSTGRES_USER:-post_user}
+      POSTGRES_PASSWORD: ${POST_POSTGRES_PASSWORD:-change-me-post}
+      POSTGRES_DB: ${POST_POSTGRES_DB:-posts}
+    ports:
+      - "5436:5432"
+    volumes:
+      - post-db-data:/var/lib/postgresql/data
+    networks:
+      - post-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POST_POSTGRES_USER:-post_user} -d ${POST_POSTGRES_DB:-posts}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
+  post-service:
+    build:
+      context: ./apps/breezy-api
+      args:
+        SERVICE: post-service
+    restart: unless-stopped
+    environment:
+      PORT: "3103"
+      POST_DATABASE_URL: postgres://${POST_POSTGRES_USER:-post_user}:${POST_POSTGRES_PASSWORD:-change-me-post}@post-db:5432/${POST_POSTGRES_DB:-posts}?sslmode=disable
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-breezy-media}
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-http://localhost:9000}
+      NOTIF_SERVICE_URL: http://notif-service:3106
+      # Confidentialité : interroge le user-service pour autoriser l'accès aux
+      # posts/re-posts d'un compte privé (endpoint interne /internal/users/:id/can-view).
+      USER_SERVICE_URL: http://user-service:3102
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
+    depends_on:
+      post-db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+    networks:
+      - app-net
+      - post-net
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  # ─────────────────────── gateway ────────────────────────
+  # ───────────────────────── cache (Valkey) ─────────────────────────
+  cache:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    # Démarre directement en non-root : l'entrypoint n'a alors pas à droper ses
+    # privilèges via setpriv (qui échouerait avec cap_drop: ALL).
+    user: "999:1000"
+    # --save "" : pas de persistance disque (cache / rate-limit = éphémère).
+    # maxmemory + LRU : borne la RAM et évince les vieilles clés au besoin.
+    command:
+      - valkey-server
+      - --save
+      - ""
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --requirepass
+      - ${VALKEY_PASSWORD}
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+    networks:
+      - cache-net
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 192M
+        reservations:
+          memory: 32M
+
+  api-gateway:
+    build:
+      context: ./apps/breezy-api
+      args:
+        SERVICE: api-gateway
+    restart: unless-stopped
+    environment:
+      PORT: "3001"
+      APP_ENV: ${APP_ENV:-development}
+      CORE_API_URL: http://core-api:3101
+      USER_SERVICE_URL: http://user-service:3102
+      AUTH_SERVICE_URL: http://auth-service:3104
+      POST_SERVICE_URL: http://post-service:3103
+      MSG_SERVICE_URL: http://message-service:3105
+      NOTIF_SERVICE_URL: http://notif-service:3106
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_PREVIOUS_SECRET: ${JWT_PREVIOUS_SECRET:-}
+      JWT_ISSUER: ${JWT_ISSUER}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-daddy-api}
+      JWT_ALG: ${JWT_ALG:-HS256}
+      JWT_ACTIVE_KID: ${JWT_ACTIVE_KID:-v1}
+      JWT_PREVIOUS_KID: ${JWT_PREVIOUS_KID:-}
+      JWT_PUBLIC_KEY_PATH: ${JWT_PUBLIC_KEY_PATH:-}
+      JWT_PREVIOUS_PUBLIC_KEY_PATH: ${JWT_PREVIOUS_PUBLIC_KEY_PATH:-}
+      JWT_LEEWAY_SECONDS: ${JWT_LEEWAY_SECONDS:-30}
+      JWT_MAX_TOKEN_AGE_MINUTES: ${JWT_MAX_TOKEN_AGE_MINUTES:-16}
+      VALKEY_ADDR: cache:6379
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD}
+      RATE_LIMIT_AUTH_PER_MIN: ${RATE_LIMIT_AUTH_PER_MIN:-10}
+      RATE_LIMIT_API_PER_MIN: ${RATE_LIMIT_API_PER_MIN:-120}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,capacitor://localhost,http://localhost}
+    ports:
+      - "3001:3001"
+    depends_on:
+      cache:
+        condition: service_healthy
+      core-api:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      post-service:
+        condition: service_healthy
+      message-service:
+        condition: service_healthy
+      notif-service:
+        condition: service_healthy
+    networks:
+      - edge
+      - app-net
+      - cache-net
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          memory: 32M
+
+  # ───────────────────────── web ──────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: apps/breezy-web/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      api-gateway:
+        condition: service_started
+    networks:
+      - edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ────────────────────────── pgadmin ─────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:7.7
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: example@example.com
+      PGADMIN_DEFAULT_PASSWORD: password
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "False"
+    volumes:
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./pgadmin/pgpass:/pgpass:ro
+    depends_on:
+      core-db:
+        condition: service_healthy
+      user-db:
+        condition: service_healthy
+      auth-db:
+        condition: service_healthy
+    networks:
+      - edge
+      - core-net
+      - user-net
+      - auth-net
+
+volumes:
+  core-db-data:
+  user-db-data:
+  auth-db-data:
+  post-db-data:
+  msg-db-data:
+  notif-db-data:
+  minio-data:
+
+networks:
+  edge:
+  app-net:
+  core-net:
+    internal: true
+  user-net:
+    internal: true
+  auth-net:
+    internal: true
+  post-net:
+    internal: true
+  msg-net:
+    internal: true
+  notif-net:
+    internal: true
+  cache-net:
+    internal: true

@@ -1,0 +1,503 @@
+name: CI/CD Pipeline
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  REGISTRY: ghcr.io/${{ github.repository_owner }}/daddy
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  # ── Lint and test run in parallel ──────────────────────────────────────────
+
+  lint:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: apps/breezy-api/go.sum
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          working-directory: apps/breezy-api
+
+  test:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.base_ref == 'main' || github.base_ref == 'develop'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: apps/breezy-api/go.sum
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Run backend tests
+        run: cd apps/breezy-api && go test ./...
+
+      # testcontainers-go a besoin du socket du démon Docker. Le runner tourne
+      # en Docker rootless (socket sous le runtime dir de l'utilisateur, pas
+      # /var/run/docker.sock), donc on résout l'endpoint réel via le contexte
+      # du CLI Docker — celui-là même qui sert aux jobs build/publish — avec des
+      # fallbacks, et on l'exporte pour le step de tests.
+      - name: Resolve Docker socket
+        run: |
+          host="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+          for candidate in \
+            "$host" \
+            "${DOCKER_HOST:-}" \
+            "unix://${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/docker.sock" \
+            "unix:///run/user/$(id -u)/docker.sock" \
+            "unix:///var/run/docker.sock"; do
+            [ -z "$candidate" ] && continue
+            sock="${candidate#unix://}"
+            if [ -S "$sock" ]; then
+              echo "Using DOCKER_HOST=$candidate"
+              echo "DOCKER_HOST=$candidate" >> "$GITHUB_ENV"
+              exit 0
+            fi
+          done
+          echo "::error::No Docker socket found. Diagnostics:"
+          id; echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-<unset>}"
+          docker context ls 2>&1 || true
+          ls -la "/run/user/$(id -u)" /var/run/docker.sock 2>&1 || true
+          exit 1
+
+      # Le tag `integration` est additif : ce run compile aussi les tests
+      # unitaires, le profil couvre donc l'ensemble du code en une seule passe.
+      - name: Run backend integration tests with coverage
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: cd apps/breezy-api && go test -tags=integration -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Backend coverage summary
+        run: |
+          cd apps/breezy-api
+          go tool cover -html=coverage.out -o coverage.html
+          # Profil filtré : exclut le code structurellement non testable
+          # (points d'entrée, I/O réseau/stockage, infra) listé dans .coverignore.
+          bash scripts/coverage.sh coverage.out
+          raw=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}')
+          total=$(go tool cover -func=coverage.filtered.out | awk '/^total:/ {print $3}')
+          {
+            echo "### Backend test coverage: ${total}"
+            echo ''
+            echo "Couverture du code testable (hors infra exclue via \`.coverignore\`)."
+            echo "Couverture brute, tout code confondu : ${raw}."
+            echo ''
+            echo '<details><summary>Per-function coverage (brut)</summary>'
+            echo ''
+            echo '```'
+            go tool cover -func=coverage.out
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload backend coverage report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: backend-coverage
+          path: |
+            apps/breezy-api/coverage.out
+            apps/breezy-api/coverage.filtered.out
+            apps/breezy-api/coverage.html
+          # Diagnostic report; no need to keep the 90-day default.
+          retention-days: 7
+
+      - name: Run frontend tests with coverage
+        run: |
+          npm run test:coverage --workspace=packages/breezy-shared
+          npm test --workspace=apps/breezy-web -- --coverage
+
+      - name: Frontend coverage summary
+        run: |
+          echo "### Frontend test coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "Tests passed with coverage thresholds enforced (≥ 90 % lines/functions/branches)." >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Build (needs both lint + test) ─────────────────────────────────────────
+
+  build:
+    needs: [lint, test]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.base_ref == 'main' || github.base_ref == 'develop'
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+          cache-dependency-path: apps/breezy-api/go.sum
+
+      - name: Build api-gateway
+        run: cd apps/breezy-api && go build -o main ./api-gateway
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: main
+          path: apps/breezy-api/main
+          # Only a handoff to the deploy job in the same run; keep the minimum.
+          retention-days: 1
+
+  # ── Docker builds (parallel matrix, main/develop only) ─────────────────────
+
+  publish-services:
+    needs: [lint, test]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service:
+          - api-gateway
+          - auth-service
+          - core-api
+          - message-service
+          - notification-service
+          - post-service
+          - user-service
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service }}
+        env:
+          TAG: ${{ github.sha }}
+          FLOAT_TAG: ${{ github.ref == 'refs/heads/main' && 'latest' || 'dev' }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --build-arg SERVICE=${{ matrix.service }} \
+            --tag $REGISTRY/${{ matrix.service }}:$TAG \
+            --tag $REGISTRY/${{ matrix.service }}:$FLOAT_TAG \
+            --cache-from type=registry,ref=$REGISTRY/${{ matrix.service }}:buildcache \
+            --cache-to   type=registry,ref=$REGISTRY/${{ matrix.service }}:buildcache,mode=max \
+            --push \
+            apps/breezy-api
+
+  publish-web:
+    needs: [lint, test]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push web
+        env:
+          TAG: ${{ github.sha }}
+          FLOAT_TAG: ${{ github.ref == 'refs/heads/main' && 'latest' || 'dev' }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --file apps/breezy-web/Dockerfile \
+            --target prod \
+            --tag $REGISTRY/web:$TAG \
+            --tag $REGISTRY/web:$FLOAT_TAG \
+            --cache-from type=registry,ref=$REGISTRY/web:buildcache \
+            --cache-to   type=registry,ref=$REGISTRY/web:buildcache,mode=max \
+            --push \
+            .
+
+  # ── K8s image tag update (after all images are pushed) ─────────────────────
+
+  update-k8s:
+    needs: [publish-services, publish-web]
+    runs-on: self-hosted
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install kustomize
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz" \
+            | tar xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Update image tags in kustomization
+        env:
+          TAG: ${{ github.sha }}
+          OVERLAY: ${{ github.ref == 'refs/heads/main' && '.kubernetes/apps/daddy/overlays/prod' || '.kubernetes/apps/daddy/overlays/dev' }}
+        run: |
+          cd $OVERLAY
+          kustomize edit set image \
+            daddy-api-gateway=$REGISTRY/api-gateway:$TAG \
+            daddy-auth-service=$REGISTRY/auth-service:$TAG \
+            daddy-core-api=$REGISTRY/core-api:$TAG \
+            daddy-message-service=$REGISTRY/message-service:$TAG \
+            daddy-notification-service=$REGISTRY/notification-service:$TAG \
+            daddy-post-service=$REGISTRY/post-service:$TAG \
+            daddy-user-service=$REGISTRY/user-service:$TAG \
+            daddy-web=$REGISTRY/web:$TAG
+
+      - name: Commit updated tags (main — direct push)
+        if: github.ref == 'refs/heads/main'
+        env:
+          TAG: ${{ github.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .kubernetes/
+          git diff --staged --quiet || \
+            git commit -m "ci: bump images to ${TAG::8} [skip ci]" && \
+            git push
+
+      - name: Open PR to bump tags (develop — protected branch)
+        if: github.ref == 'refs/heads/develop'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "ci: bump images to ${{ github.sha }} [skip ci]"
+          branch: ci/bump-images-${{ github.sha }}
+          delete-branch: true
+          title: "ci: bump images to ${{ github.sha }}"
+          body: "Automated image tag bump from CI pipeline run `${{ github.run_id }}`."
+          base: develop
+          labels: ci,automerge
+
+      - name: Push dev git tag
+        if: github.ref == 'refs/heads/develop'
+        run: |
+          git tag -f dev
+          git push origin dev --force
+
+  # ── Mobile builds (Android + iOS) ─────────────────────────────────────────
+
+  build-android:
+    needs: [lint, test]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install unzip
+        run: sudo apt-get install -y unzip
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Create .env.mobile
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "VITE_API_URL=${{ vars.MOBILE_API_URL_PROD || 'https://api.breezy.ecadiere.fr' }}" > apps/breezy-web/.env.mobile
+          else
+            echo "VITE_API_URL=https://api-dev.breezy.ecadiere.fr" > apps/breezy-web/.env.mobile
+          fi
+
+      - name: Build web (mobile mode)
+        run: npm run build --workspace=apps/breezy-web -- --mode mobile
+
+      - name: Capacitor sync Android
+        working-directory: apps/breezy-mobile
+        run: npx cap sync android
+
+      - name: Build APK
+        working-directory: apps/breezy-mobile/android
+        run: chmod +x gradlew && ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: breezy-android-${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}-${{ github.sha }}
+          path: apps/breezy-mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+  build-ios:
+    needs: [lint, test]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    runs-on: macos-latest
+    env:
+      CERTIFICATE_P12: ${{ secrets.IOS_CERTIFICATE_P12 }}
+      TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Create .env.mobile
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            echo "VITE_API_URL=${{ vars.MOBILE_API_URL_PROD || 'https://api.breezy.ecadiere.fr' }}" > apps/breezy-web/.env.mobile
+          else
+            echo "VITE_API_URL=https://api-dev.breezy.ecadiere.fr" > apps/breezy-web/.env.mobile
+          fi
+
+      - name: Build web (mobile mode)
+        run: npm run build --workspace=apps/breezy-web -- --mode mobile
+
+      - name: Capacitor sync iOS
+        working-directory: apps/breezy-mobile
+        run: npx cap sync ios
+
+      - name: Install CocoaPods dependencies
+        working-directory: apps/breezy-mobile/ios/App
+        run: pod install
+
+      - name: Import signing certificate
+        if: env.CERTIFICATE_P12 != ''
+        env:
+          CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$CERTIFICATE_P12" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "" ci.keychain
+          security import /tmp/cert.p12 -k ci.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -s ci.keychain
+          security default-keychain -s ci.keychain
+          security unlock-keychain -p "" ci.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" ci.keychain
+
+      - name: Install provisioning profile
+        if: env.CERTIFICATE_P12 != ''
+        env:
+          PROVISION_PROFILE: ${{ secrets.IOS_PROVISION_PROFILE }}
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROVISION_PROFILE" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/breezy.mobileprovision
+
+      - name: Build and export IPA (signed)
+        if: env.CERTIFICATE_P12 != ''
+        working-directory: apps/breezy-mobile/ios/App
+        run: |
+          xcodebuild archive \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath /tmp/Breezy.xcarchive \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGN_STYLE=Manual
+
+          cat > /tmp/ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>ad-hoc</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>signingStyle</key><string>manual</string>
+          </dict></plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath /tmp/Breezy.xcarchive \
+            -exportPath /tmp/Breezy-ipa \
+            -exportOptionsPlist /tmp/ExportOptions.plist
+
+      - name: Build simulator app (unsigned — no signing secrets)
+        if: env.CERTIFICATE_P12 == ''
+        working-directory: apps/breezy-mobile/ios/App
+        run: |
+          xcodebuild build \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath /tmp/DerivedData
+
+      - name: Upload IPA
+        if: env.CERTIFICATE_P12 != ''
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: breezy-ios-${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}-${{ github.sha }}
+          path: /tmp/Breezy-ipa/*.ipa
+          retention-days: 30
+
+      - name: Upload simulator build
+        if: env.CERTIFICATE_P12 == ''
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: breezy-ios-simulator-${{ github.sha }}
+          path: /tmp/DerivedData/Build/Products/Debug-iphonesimulator/App.app
+          retention-days: 7
+
+  # ── Release (main only) ────────────────────────────────────────────────────
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: main
+          path: ./
+
+      - name: Make executable
+        run: chmod +x main
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.sha }}
+          name: Release ${{ github.sha }}
+          body: CI/CD Release
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

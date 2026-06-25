@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: breezy-web
+spec:
+  selector:
+    app: breezy-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: breezy-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: breezy-web
+  template:
+    metadata:
+      labels:
+        app: breezy-web
+    spec:
+      containers:
+        - name: breezy-web
+          image: daddy-web:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+          readinessProbe: &webHealth
+            httpGet:
+              path: /
+              port: 80
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          livenessProbe: *webHealth

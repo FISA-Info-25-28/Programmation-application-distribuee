@@ -1,0 +1,36 @@
+{
+  "name": "daddy-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "predev": "npm run dev:db",
+    "compose": "sh ./scripts/compose.sh",
+    "dev:db": "npm run compose -- up -d core-db user-db auth-db",
+    "dev": "concurrently \"npm run dev --workspace=apps/breezy-web\" \"npm run dev --workspace=apps/breezy-api\"",
+    "build": "npm run build --workspace=apps/breezy-web && npm run build --workspace=apps/breezy-api",
+    "lint": "npm run lint:npm && npm run lint:go",
+    "lint:npm": "npm run lint --workspace=apps/breezy-web",
+    "lint:go": "cd apps/breezy-api && go vet ./...",
+    "docs:api": "node scripts/generate-swagger-api-docs.mjs",
+    "docs:web": "mkdir -p docs/web && typedoc --tsconfig apps/breezy-web/tsconfig.app.json --entryPointStrategy resolve --entryPoints apps/breezy-web/src/main.tsx --customCss docs-assets/typedoc-custom.css --out docs/web",
+    "docs:home": "node scripts/generate-docs-home.mjs",
+    "seed": "node scripts/seed.mjs",
+    "build:docs": "npm run docs:api && npm run docs:web && npm run docs:home"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.1",
+    "sharp": "^0.35.2",
+    "swagger-ui-dist": "^5.27.2",
+    "typedoc": "^0.28.14"
+  },
+  "overrides": {
+    "postcss": "^8.5.15",
+    "next": {
+      "postcss": "^8.5.15"
+    }
+  }
+}

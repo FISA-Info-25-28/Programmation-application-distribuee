@@ -1,0 +1,13 @@
+{
+  "name": "api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"PORT=3101 CORE_DATABASE_URL=postgres://core_user:change-me-core@localhost:5433/core?sslmode=disable go run ./core-api\" \"PORT=3102 USER_DATABASE_URL=postgres://user_user:change-me-user@localhost:5434/users?sslmode=disable go run ./user-service\" \"PORT=3104 AUTH_DATABASE_URL=postgres://auth_user:change-me-auth@localhost:5435/auth?sslmode=disable JWT_SECRET=dev-jwt-secret JWT_ISSUER=daddy-auth go run ./auth-service\" \"PORT=3103 POST_DATABASE_URL=postgres://post_user:change-me-post@localhost:5436/posts?sslmode=disable go run ./post-service\" \"PORT=3001 CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,capacitor://localhost,http://localhost CORE_API_URL=http://localhost:3101 USER_SERVICE_URL=http://localhost:3102 AUTH_SERVICE_URL=http://localhost:3104 POST_SERVICE_URL=http://localhost:3103 JWT_SECRET=dev-jwt-secret JWT_ISSUER=daddy-auth go run ./api-gateway\"",
+    "build": "mkdir -p bin && go build -o ./bin/core-api ./core-api && go build -o ./bin/user-service ./user-service && go build -o ./bin/auth-service ./auth-service && go build -o ./bin/post-service ./post-service && go build -o ./bin/api-gateway ./api-gateway",
+    "start": "PORT=3001 CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,capacitor://localhost,http://localhost CORE_API_URL=http://localhost:3101 USER_SERVICE_URL=http://localhost:3102 AUTH_SERVICE_URL=http://localhost:3104 POST_SERVICE_URL=http://localhost:3103 JWT_SECRET=dev-jwt-secret JWT_ISSUER=daddy-auth go run ./api-gateway"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.1"
+  }
+}

@@ -1,0 +1,105 @@
+version: "2"
+
+# Global configuration
+run:
+  timeout: 5m
+  tests: true
+
+# Linters settings
+linters:
+  settings:
+    gocyclo:
+      min-complexity: 15
+    dupl:
+      threshold: 100
+    goconst:
+      min-len: 3
+      min-occurrences: 2
+    misspell:
+      locale: US
+      # Mots français qui entrent en collision avec le dictionnaire anglais de
+      # misspell (les commentaires du projet sont en français).
+      ignore-rules:
+        - compense
+        - connexion
+        - correspondant
+        - marrage
+        - pointeur
+        - partiel
+        - compteurs
+        - synchronisation
+        - factorise
+        - centres
+        - candidats
+        - normalis
+        - normalisation
+        - plantes
+        - neutralise
+        - stabiliser
+        - transforme
+  enable:
+    - gocyclo
+    - dupl
+    - goconst
+    - govet
+    - staticcheck
+    - unused
+    - ineffassign
+    - misspell
+    - unconvert
+    - nolintlint
+    - godot
+    - gomodguard_v2
+    - gosec
+    - rowserrcheck
+    - sqlclosecheck
+    - tparallel
+    - unparam
+    - whitespace
+    - wrapcheck
+    - zerologlint
+  disable:
+    - prealloc
+    - gochecknoinits
+    - gochecknoglobals
+    - godox
+    - wsl
+    - lll
+    - goheader
+  exclusions:
+    rules:
+      # Les fixtures de test répètent légitimement des littéraux (noms, IDs, e-mails
+      # de scénario…). goconst sur les fichiers _test.go n'apporte que du bruit.
+      - path: _test\.go
+        linters:
+          - goconst
+      # common_passwords.go est une blocklist de mots de passe : certaines entrées
+      # ("secret", "user", …) coïncident avec des constantes sans rapport
+      # sémantique. La répétition est inhérente à une liste de données.
+      - path: common_passwords\.go
+        linters:
+          - goconst
+
+formatters:
+  settings:
+    gofumpt:
+      module-path: daddy
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - daddy
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(daddy)
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+

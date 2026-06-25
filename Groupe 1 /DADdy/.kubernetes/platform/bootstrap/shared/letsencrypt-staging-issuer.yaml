@@ -1,0 +1,26 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  acme:
+    email: enzo.cadiere10@gmail.com
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - selector:
+          dnsZones:
+            - breezy.ecadiere.fr
+        dns01:
+          route53:
+            region: eu-west-3
+            hostedZoneID: Z05417091TMRI4DEQURHY
+            accessKeyIDSecretRef:
+              name: route53-credentials-secret
+              key: access-key-id
+            secretAccessKeySecretRef:
+              name: route53-credentials-secret
+              key: secret-access-key

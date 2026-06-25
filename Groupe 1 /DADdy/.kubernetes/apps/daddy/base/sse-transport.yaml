@@ -1,0 +1,8 @@
+apiVersion: traefik.io/v1alpha1
+kind: ServersTransport
+metadata:
+  name: sse-transport
+spec:
+  forwardingTimeouts:
+    responseHeaderTimeout: 0s
+    idleConnTimeout: 0s

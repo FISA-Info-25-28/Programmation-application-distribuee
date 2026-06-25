@@ -1,0 +1,37 @@
+# Fichiers exclus du calcul de couverture (cf. scripts/coverage.sh).
+#
+# Règle : on n'exclut QUE du code structurellement non testable — points
+# d'entrée, I/O réseau/stockage externe, infra. Tout code testable (handlers,
+# logique métier, builders purs, écritures DB) reste compté, même non couvert,
+# pour que le chiffre reste honnête. Le code non testable a été regroupé dans
+# des fichiers dédiés (bootstrap.go, *_smtp.go, oauth_fetch.go…) pour permettre
+# une exclusion par fichier sans perdre la couverture du code voisin.
+#
+# Une ligne = un motif (regex étendue) appliqué aux chemins de coverage.out.
+# Les lignes vides et celles commençant par # sont ignorées par le script.
+
+# ── Points d'entrée (main) : démarrent le serveur, jamais exécutés en test ──
+/api-gateway/main\.go:
+/auth-service/main\.go:
+/user-service/main\.go:
+/healthcheck/main\.go:
+/core-api/bootstrap\.go:
+/message-service/bootstrap\.go:
+/notification-service/bootstrap\.go:
+/post-service/bootstrap\.go:
+
+# ── Chargement de configuration (lecture d'environnement, glue infra) ──
+/auth-service/config\.go:
+/user-service/config\.go:
+
+# ── Envoi d'emails SMTP (I/O réseau ; les gabarits MIME purs restent comptés) ──
+/auth-service/mail_smtp\.go:
+
+# ── OAuth : échange de code + appels aux API Google/GitHub (URLs externes) ──
+/auth-service/oauth_fetch\.go:
+
+# ── Rate limiter Valkey/Redis (nécessite un Redis ; l'impl mémoire est testée) ──
+/auth-service/rate_limit_valkey\.go:
+
+# ── Upload d'objets MinIO (stockage externe) ──
+/user-service/avatar\.go:

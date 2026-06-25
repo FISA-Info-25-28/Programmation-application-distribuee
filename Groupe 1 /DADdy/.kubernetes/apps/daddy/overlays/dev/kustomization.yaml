@@ -1,0 +1,131 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: daddy-dev
+
+resources:
+- ../../base
+- namespace.yaml
+- ingress.yaml
+- sse-ingressroute.yaml
+- certificate.yaml
+- secrets.yaml
+- ghcr-sealed-secret.yaml
+- smtp-sealed-secret.yaml
+- google-oauth-sealed-secret.yaml
+- github-oauth-sealed-secret.yaml
+
+images:
+- name: daddy-api-gateway
+  newName: ghcr.io/enzo-cadiere/daddy/api-gateway
+  newTag: 8f7575fc69a77e647e3de00bd8593b5d357c61b1
+- name: daddy-auth-service
+  newName: ghcr.io/enzo-cadiere/daddy/auth-service
+  newTag: 8f7575fc69a77e647e3de00bd8593b5d357c61b1
+- name: daddy-core-api
+  newName: ghcr.io/enzo-cadiere/daddy/core-api
+  newTag: 8f7575fc69a77e647e3de00bd8593b5d357c61b1
+- name: daddy-message-service
+  newName: ghcr.io/enzo-cadiere/daddy/message-service
+  newTag: 8f7575fc69a77e647e3de00bd8593b5d357c61b1
+- name: daddy-notification-service
+  newName: ghcr.io/enzo-cadiere/daddy/notification-service
+  newTag: 8f7575fc69a77e647e3de00bd8593b5d357c61b1
+- name: daddy-post-service
+  newName: ghcr.io/enzo-cadiere/daddy/post-service
+  newTag: 8f7575fc69a77e647e3de00bd8593b5d357c61b1
+- name: daddy-user-service
+  newName: ghcr.io/enzo-cadiere/daddy/user-service
+  newTag: 8f7575fc69a77e647e3de00bd8593b5d357c61b1
+- name: daddy-web
+  newName: ghcr.io/enzo-cadiere/daddy/web
+  newTag: 8f7575fc69a77e647e3de00bd8593b5d357c61b1
+
+      # capacitor://localhost = origine WKWebView iOS ; http://localhost = WebView Android.
+      # Requis pour que l'app mobile passe CORS + CSRF (même liste d'origines).
+      # capacitor://localhost = origine WKWebView iOS ; http://localhost = WebView Android.
+      # Requis pour que l'app mobile passe CORS + CSRF (même liste d'origines).
+patches:
+- patch: |-
+    - op: replace
+      path: /data/MINIO_PUBLIC_URL
+      value: https://media-dev.breezy.ecadiere.fr
+    - op: add
+      path: /data/SMTP_HOST
+      value: smtp.gmail.com
+    - op: add
+      path: /data/SMTP_PORT
+      value: "587"
+    - op: add
+      path: /data/MAIL_FROM
+      value: "Breezy <breezycesi@gmail.com>"
+    - op: add
+      path: /data/APP_BASE_URL
+      value: https://app-dev.breezy.ecadiere.fr
+    - op: add
+      path: /data/CORS_ALLOWED_ORIGINS
+      # capacitor://localhost = origine WKWebView iOS ; http://localhost = WebView Android.
+      # Requis pour que l'app mobile passe CORS + CSRF (même liste d'origines).
+      value: https://app-dev.breezy.ecadiere.fr,capacitor://localhost,http://localhost
+  target:
+    kind: ConfigMap
+    name: daddy-shared-config
+- patch: |-
+    - op: add
+      path: /spec/template/spec/imagePullSecrets
+      value:
+        - name: ghcr-credentials
+  target:
+    kind: Deployment
+- patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: SMTP_USERNAME
+        valueFrom:
+          secretKeyRef:
+            name: daddy-smtp-secret
+            key: SMTP_USERNAME
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: SMTP_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: daddy-smtp-secret
+            key: SMTP_PASSWORD
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: GOOGLE_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: daddy-google-oauth-secret
+            key: GOOGLE_CLIENT_ID
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: GOOGLE_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: daddy-google-oauth-secret
+            key: GOOGLE_CLIENT_SECRET
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: GITHUB_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: daddy-github-oauth-secret
+            key: GITHUB_CLIENT_ID
+    - op: add
+      path: /spec/template/spec/containers/0/env/-
+      value:
+        name: GITHUB_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: daddy-github-oauth-secret
+            key: GITHUB_CLIENT_SECRET
+  target:
+    kind: Deployment
+    name: auth-service

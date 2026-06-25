@@ -1,0 +1,180 @@
+@startuml breezy_schema
+' ============================================================
+'  Breezy — Modèle Entité-Association (d'après le schéma SQL)
+' ============================================================
+hide circle
+skinparam linetype ortho
+skinparam roundcorner 6
+skinparam shadowing false
+skinparam nodesep 55
+skinparam ranksep 70
+skinparam class {
+    BackgroundColor #FDFDFD
+    BorderColor #5B8DB8
+    ArrowColor #5B8DB8
+}
+
+' Cardinalités :  ||--o{  = 1 vers 0..N
+
+' ============================================================
+'  PÔLES CENTRAUX
+' ============================================================
+entity "users" as users {
+    * id : BIGSERIAL <<PK>>
+    --
+    * username : VARCHAR(50) <<UNIQUE>>
+    * email : VARCHAR(255) <<UNIQUE>>
+    * password : VARCHAR(255)
+    bio : TEXT
+    avatar : VARCHAR(255)
+    * role : <<user|moderator|admin>>
+    * status : <<active|suspended|banned>>
+    * locale : VARCHAR(5)
+    * theme : VARCHAR(20)
+    * followers_count : INT
+    * following_count : INT
+    * created_at : TIMESTAMPTZ
+    * updated_at : TIMESTAMPTZ
+}
+
+entity "posts" as posts {
+    * id : BIGSERIAL <<PK>>
+    --
+    * content : VARCHAR(280)
+    * author_id : BIGINT <<FK users>>
+    parent_id : BIGINT <<FK posts>>
+    * likes_count : INT
+    * comments_count : INT
+    * created_at : TIMESTAMPTZ
+    * updated_at : TIMESTAMPTZ
+}
+
+' ============================================================
+'  TABLES DE LIAISON (users <-> posts)
+' ============================================================
+together {
+    entity "likes" as likes {
+        * user_id : BIGINT <<PK,FK users>>
+        * post_id : BIGINT <<PK,FK posts>>
+        --
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "mentions" as mentions {
+        * post_id : BIGINT <<PK,FK posts>>
+        * user_id : BIGINT <<PK,FK users>>
+    }
+
+    entity "reports" as reports {
+        * id : BIGSERIAL <<PK>>
+        --
+        * reporter_id : BIGINT <<FK users>>
+        * post_id : BIGINT <<FK posts>>
+        moderator_id : BIGINT <<FK users>>
+        * reason : VARCHAR(255)
+        * status : <<pending|resolved|rejected>>
+        * created_at : TIMESTAMPTZ
+    }
+}
+
+' ============================================================
+'  SATELLITES CÔTÉ UTILISATEUR
+' ============================================================
+together {
+    entity "follows" as follows {
+        * follower_id : BIGINT <<PK,FK users>>
+        * following_id : BIGINT <<PK,FK users>>
+        --
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "notifications" as notifications {
+        * id : BIGSERIAL <<PK>>
+        --
+        * recipient_id : BIGINT <<FK users>>
+        * type : <<like|follow|mention|reply>>
+        data : JSONB
+        * read : BOOLEAN
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "private_messages" as private_messages {
+        * id : BIGSERIAL <<PK>>
+        --
+        * sender_id : BIGINT <<FK users>>
+        * recipient_id : BIGINT <<FK users>>
+        * content : TEXT
+        * read : BOOLEAN
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "sanctions" as sanctions {
+        * id : BIGSERIAL <<PK>>
+        --
+        * user_id : BIGINT <<FK users>>
+        moderator_id : BIGINT <<FK users>>
+        * type : <<suspension|ban>>
+        reason : VARCHAR(255)
+        * started_at : TIMESTAMPTZ
+        ended_at : TIMESTAMPTZ
+        * created_at : TIMESTAMPTZ
+    }
+}
+
+' ============================================================
+'  SATELLITES CÔTÉ CONTENU
+' ============================================================
+together {
+    entity "media" as media {
+        * id : BIGSERIAL <<PK>>
+        --
+        * post_id : BIGINT <<FK posts>>
+        * media_type : <<image|video|audio>>
+        * url : VARCHAR(255)
+        * created_at : TIMESTAMPTZ
+    }
+
+    entity "post_hashtags" as post_hashtags {
+        * post_id : BIGINT <<PK,FK posts>>
+        * hashtag_id : BIGINT <<PK,FK hashtags>>
+    }
+
+    entity "hashtags" as hashtags {
+        * id : BIGSERIAL <<PK>>
+        --
+        * name : VARCHAR(100) <<UNIQUE>>
+    }
+}
+
+' ============================================================
+'  RELATIONS
+' ============================================================
+
+' --- Cœur ---
+users ||--o{ posts          : "écrit (author_id)"
+posts ||--o{ posts          : "parent_id (réponse)"
+
+' --- Liaisons users <-> posts ---
+users ||--o{ likes
+posts ||--o{ likes
+users ||--o{ mentions
+posts ||--o{ mentions
+users ||--o{ reports        : "reporter_id"
+users ||--o{ reports        : "moderator_id"
+posts ||--o{ reports        : "post_id"
+
+' --- Satellites côté users ---
+users ||--o{ follows        : "follower_id"
+users ||--o{ follows        : "following_id"
+users ||--o{ notifications  : "recipient_id"
+users ||--o{ private_messages : "sender_id"
+users ||--o{ private_messages : "recipient_id"
+users ||--o{ sanctions      : "user_id"
+users ||--o{ sanctions      : "moderator_id"
+
+' --- Satellites côté posts ---
+posts    ||--o{ media
+posts    ||--o{ post_hashtags
+hashtags ||--o{ post_hashtags
+
+@enduml

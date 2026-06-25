@@ -1,0 +1,56 @@
+# Build outputs
+dist/
+.next/
+out-tsc/
+tmp/
+coverage/
+docs/
+*.out
+
+# Angular
+.angular/
+
+# Node modules and dependency files
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Vite
+vite.config.*.timestamp-*.mjs
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.*.example
+!apps/breezy-web/.env.mobile
+
+# Angular CLI and build artefacts
+/.angular-cli.json
+/.ng/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Seed artefacts (identifiants du jeu d'essai générés par scripts/seed.mjs)
+scripts/seed-users.json
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
+
+# Go binaries
+bin/
+apps/breezy-api/bin/
+
+# Prevent k8s secrets from being committed
+.kubernetes/platform/bootstrap/shared/route53-credentials-secret.yaml
+.kubernetes/platform/bootstrap/shared/external-dns-credentials-secret.yaml

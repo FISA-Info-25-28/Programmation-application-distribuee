@@ -1,0 +1,1144 @@
+openapi: 3.0.3
+info:
+  title: Breezy API
+  version: 1.0.0
+  description: >
+    Réseau social léger type Twitter/X. Architecture microservices (Go/Gin)
+    derrière une API Gateway, données PostgreSQL, authentification JWT.
+    Tous les appels passent par la gateway.
+servers:
+  - url: http://localhost:8080
+    description: API Gateway (développement)
+
+tags:
+  - name: Auth
+    description: Inscription, connexion, session (Fx1, Fx2)
+  - name: Users
+    description: Profils et abonnements (Fx9, Fx10, Fx11)
+  - name: Posts
+    description: Messages, likes, commentaires (Fx3, Fx4, Fx6, Fx7, Fx8)
+  - name: Feed
+    description: Fil d'actualités (Fx5)
+
+# Sécurité par défaut : toutes les routes exigent un JWT.
+# Les routes publiques la désactivent avec "security: []".
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Créer un compte (Fx1)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Compte créé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Se connecter (Fx2)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Connexion réussie
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rafraîchir une session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Nouvelle paire de tokens
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Révoquer un refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '204':
+          description: Session révoquée
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Utilisateur courant
+      responses:
+        '200':
+          description: Profil de l'utilisateur authentifié (avec email et rôle)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/request-password-reset:
+    post:
+      tags: [Auth]
+      summary: Demander la réinitialisation du mot de passe
+      description: >
+        Envoie un lien de réinitialisation par email. Pour éviter l'énumération
+        des comptes, la réponse est toujours 202, que l'email existe ou non.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequestPasswordResetRequest'
+      responses:
+        '202':
+          description: Si un compte existe, un lien de réinitialisation a été envoyé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Réinitialiser le mot de passe via un token
+      description: >
+        Consomme le token reçu par email (usage unique) et définit le nouveau mot
+        de passe. Toutes les sessions de l'utilisateur sont révoquées.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '200':
+          description: Mot de passe réinitialisé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Changer son mot de passe (connecté)
+      description: >
+        Change le mot de passe de l'utilisateur authentifié après vérification du
+        mot de passe actuel. Toutes les sessions sont révoquées : il faut se
+        reconnecter.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '200':
+          description: Mot de passe changé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /users/me:
+    patch:
+      tags: [Users]
+      summary: Éditer son profil (Fx10)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Profil mis à jour
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/me/avatar:
+    put:
+      tags: [Users]
+      summary: Téléverser son avatar (Fx10)
+      description: >
+        Envoie un fichier image (PNG, JPEG, WebP ou GIF, 5 Mio max) stocké sur MinIO.
+        Remplace l'avatar existant le cas échéant.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Avatar mis à jour
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [avatarUrl]
+                properties:
+                  avatarUrl:
+                    type: string
+                    description: URL publique de l'avatar servi par MinIO
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Users]
+      summary: Supprimer son avatar (Fx10)
+      responses:
+        '204':
+          description: Avatar supprimé
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/me/banner:
+    put:
+      tags: [Users]
+      summary: Téléverser sa bannière (Fx10)
+      description: >
+        Envoie un fichier image (PNG, JPEG, WebP ou GIF, 10 Mio max) stocké sur MinIO.
+        Remplace la bannière existante le cas échéant.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Bannière mise à jour
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [bannerUrl]
+                properties:
+                  bannerUrl:
+                    type: string
+                    description: URL publique de la bannière servie par MinIO
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Users]
+      summary: Supprimer sa bannière (Fx10)
+      responses:
+        '204':
+          description: Bannière supprimée
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/suggestions:
+    get:
+      tags: [Users]
+      summary: Suggestions d'abonnement (« qui suivre »)
+      description: >-
+        Comptes à suivre, classés par recouvrement entre les centres d'intérêt du
+        lecteur et les thèmes des posts des auteurs (signal interne, jamais exposé
+        dans la réponse). Exclut soi, les comptes déjà suivis et les blocages. En
+        l'absence de signal thématique (nouvel arrivant), repli sur des comptes
+        récents.
+      responses:
+        '200':
+          description: Liste de profils suggérés
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /users/{id}:
+    get:
+      tags: [Users]
+      summary: Profil public d'un utilisateur (Fx10)
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Profil
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/me/follow-requests:
+    get:
+      tags: [Users]
+      summary: Demandes d'abonnement en attente reçues (comptes privés)
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée des profils demandeurs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+
+  /users/me/follow-requests/{id}/accept:
+    post:
+      tags: [Users]
+      summary: Accepter une demande d'abonnement (id = demandeur)
+      description: Crée l'abonnement et notifie le demandeur (follow_request_accepted).
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '204':
+          description: Demande acceptée, abonnement créé
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/me/follow-requests/{id}:
+    delete:
+      tags: [Users]
+      summary: Refuser une demande d'abonnement (id = demandeur)
+      description: Supprime la demande. Idempotent, aucune notification envoyée.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '204':
+          description: Demande refusée (ou inexistante)
+
+  /users/{id}/follow:
+    post:
+      tags: [Users]
+      summary: Suivre un utilisateur (Fx9)
+      description: >
+        Sur un compte public, crée directement l'abonnement (204). Sur un compte
+        privé, crée une demande en attente d'acceptation (202).
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '204':
+          description: Abonnement créé (compte public, idempotent)
+        '202':
+          description: Demande d'abonnement créée (compte privé)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [requested]
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Users]
+      summary: Ne plus suivre (Fx9)
+      description: Supprime l'abonnement et toute demande en attente (annulation).
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '204':
+          description: Abonnement supprimé
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /users/{id}/following:
+    get:
+      tags: [Users]
+      summary: Liste des abonnements (Fx9) — consommé par le Feed service
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée d'utilisateurs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+
+  /users/{id}/followers:
+    get:
+      tags: [Users]
+      summary: Liste des abonnés
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée d'utilisateurs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedUsers'
+
+  /users/{id}/posts:
+    get:
+      tags: [Posts]
+      summary: Posts d'un utilisateur (Fx11 / Fx4)
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée de posts, anti-chronologique
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPosts'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /posts/for-you:
+    get:
+      tags: [Posts]
+      summary: Feed personnalisé « Pour Toi »
+      description: >-
+        Feed scoré selon les préférences organiques du lecteur (affinités
+        hashtag / thème / auteur matérialisées dans user_affinity), avec un bonus
+        pour les comptes suivis, la popularité et la récence. Pour un visiteur
+        anonyme ou un nouvel arrivant sans historique, retombe sur le feed global
+        (anti-chronologique).
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée de posts, classés par pertinence
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPosts'
+
+  /hashtags/trending:
+    get:
+      tags: [Posts]
+      summary: Hashtags tendance (dernières 24h)
+      description: >-
+        Top 10 des hashtags des dernières 24h. Pour un lecteur identifié, l'ORDRE
+        est personnalisé : les hashtags portés par des posts dont le thème
+        intéresse le lecteur remontent (le thème reste un signal interne, jamais
+        exposé). `count` est le comptage brut. Anonyme → tendances globales.
+      responses:
+        '200':
+          description: Liste de hashtags tendance
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        count: { type: integer }
+
+  /posts:
+    post:
+      tags: [Posts]
+      summary: Publier un message court (Fx3)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePostRequest'
+      responses:
+        '201':
+          description: Post créé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /posts/{id}:
+    get:
+      tags: [Posts]
+      summary: Récupérer un post
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      responses:
+        '200':
+          description: Le post
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Posts]
+      summary: Éditer son post (Fx4)
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePostRequest'
+      responses:
+        '200':
+          description: Post mis à jour
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Posts]
+      summary: Supprimer un post (Fx4) — auteur, modérateur ou admin
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      responses:
+        '204':
+          description: Post supprimé
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /posts/{id}/like:
+    post:
+      tags: [Posts]
+      summary: Liker un post (Fx6) — idempotent
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      responses:
+        '200':
+          description: État du like mis à jour
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LikeResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Posts]
+      summary: Retirer son like (Fx6)
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      responses:
+        '200':
+          description: État du like mis à jour
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LikeResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /posts/{id}/comments:
+    post:
+      tags: [Posts]
+      summary: Commenter un post (Fx7) ou répondre à un commentaire (Fx8)
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCommentRequest'
+      responses:
+        '201':
+          description: Commentaire créé
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      tags: [Posts]
+      summary: Commentaires d'un post (Fx7) — liste à plat, arborescence reconstruite via parentCommentId
+      parameters:
+        - $ref: '#/components/parameters/PostId'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Liste paginée de commentaires
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedComments'
+
+  /feed:
+    get:
+      tags: [Feed]
+      summary: Fil des utilisateurs suivis (Fx5)
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: >
+            Liste paginée de posts des utilisateurs suivis, anti-chronologique.
+            data vide si l'utilisateur ne suit personne.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPosts'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    UserId:
+      name: id
+      in: path
+      required: true
+      description: Identifiant opaque de l'utilisateur, préfixé (ex. "usr_ab12cd34ef56ab78"), émis par l'auth-service.
+      schema:
+        type: string
+        example: usr_ab12cd34ef56ab78
+    PostId:
+      name: id
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/PostId'
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+
+  responses:
+    BadRequest:
+      description: Requête invalide
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: VALIDATION_ERROR
+            message: content exceeds 280 characters
+    Unauthorized:
+      description: Non authentifié
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: UNAUTHENTICATED
+            message: invalid or missing token
+    Forbidden:
+      description: Authentifié mais non autorisé
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: FORBIDDEN
+            message: you are not the author of this post
+    NotFound:
+      description: Ressource introuvable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: NOT_FOUND
+            message: post not found
+    Conflict:
+      description: Conflit (ressource déjà existante)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: CONFLICT
+            message: username already taken
+    TooManyRequests:
+      description: Trop de requêtes — limite de débit atteinte
+      headers:
+        Retry-After:
+          description: Secondes à attendre avant de réessayer
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: RATE_LIMITED
+            message: rate limit exceeded
+
+  schemas:
+    PostId:
+      type: string
+      description: Identifiant opaque du post, préfixé par "pst_".
+      pattern: '^pst_[a-f0-9]{16}$'
+      example: pst_ab12cd34ef56ab78
+
+    CommentId:
+      type: string
+      description: Identifiant opaque du commentaire, préfixé par "cmt_".
+      pattern: '^cmt_[a-f0-9]{16}$'
+      example: cmt_ab12cd34ef56ab78
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum: [VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, RATE_LIMITED, INTERNAL_ERROR]
+        message:
+          type: string
+
+    Pagination:
+      type: object
+      required: [page, limit, total]
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        total:
+          type: integer
+          example: 137
+
+    UserSummary:
+      type: object
+      required: [id, username]
+      properties:
+        id:
+          type: string
+          description: Identifiant opaque préfixé (ex. "usr_ab12cd34ef56ab78"), émis par l'auth-service.
+          example: usr_ab12cd34ef56ab78
+        username:
+          type: string
+        avatarUrl:
+          type: string
+          nullable: true
+
+    User:
+      type: object
+      required: [id, username, role, followersCount, followingCount, createdAt]
+      properties:
+        id:
+          type: string
+          description: Identifiant opaque préfixé (ex. "usr_ab12cd34ef56ab78"), émis par l'auth-service.
+          example: usr_ab12cd34ef56ab78
+        username:
+          type: string
+          minLength: 3
+          maxLength: 30
+        email:
+          type: string
+          format: email
+          nullable: true
+          description: Renvoyé uniquement lorsque l'utilisateur consulte son propre profil
+        displayName:
+          type: string
+          maxLength: 50
+          nullable: true
+          description: Nom d'affichage libre, distinct du username
+        pronouns:
+          type: string
+          maxLength: 50
+          nullable: true
+          description: Pronoms en texte libre (ex. "il/lui", "elle", "they/them")
+        bio:
+          type: string
+          maxLength: 160
+          nullable: true
+        avatarUrl:
+          type: string
+          nullable: true
+        bannerUrl:
+          type: string
+          nullable: true
+          description: Image de bannière (en-tête du profil) servie par MinIO
+        role:
+          type: string
+          enum: [user, moderator, admin]
+        isPrivate:
+          type: boolean
+          description: Compte privé — posts/re-posts réservés aux abonnés
+        followersCount:
+          type: integer
+        followingCount:
+          type: integer
+        isFollowedByMe:
+          type: boolean
+          description: Contextuel à l'appelant (présent sur GET /users/{id})
+        followRequested:
+          type: boolean
+          description: >
+            Contextuel (GET /users/{id}) — true si l'appelant a une demande
+            d'abonnement en attente vers ce compte privé
+        canViewPosts:
+          type: boolean
+          description: >
+            Contextuel (GET /users/{id}) — false sur un compte privé dont
+            l'appelant n'est pas abonné (posts/re-posts masqués)
+        createdAt:
+          type: string
+          format: date-time
+
+    Post:
+      type: object
+      required: [id, author, content, likesCount, commentsCount, likedByMe, createdAt, updatedAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/PostId'
+        author:
+          $ref: '#/components/schemas/UserSummary'
+        content:
+          type: string
+          minLength: 1
+          maxLength: 280
+        tags:
+          type: array
+          items:
+            type: string
+        likesCount:
+          type: integer
+        commentsCount:
+          type: integer
+        likedByMe:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    Comment:
+      type: object
+      required: [id, postId, author, content, createdAt]
+      properties:
+        id:
+          $ref: '#/components/schemas/CommentId'
+        postId:
+          $ref: '#/components/schemas/PostId'
+        parentCommentId:
+          allOf:
+            - $ref: '#/components/schemas/CommentId'
+          nullable: true
+          description: Non nul = réponse à un commentaire (Fx8)
+        author:
+          $ref: '#/components/schemas/UserSummary'
+        content:
+          type: string
+          minLength: 1
+          maxLength: 280
+        createdAt:
+          type: string
+          format: date-time
+
+    RegisterRequest:
+      type: object
+      required: [username, email, password, termsAccepted, termsVersion]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 30
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+        termsAccepted:
+          type: boolean
+          enum: [true]
+          description: Acceptation obligatoire du CLUF en vigueur
+        termsVersion:
+          type: string
+          enum: ['2026-06-12']
+          description: Version du CLUF affichée et acceptée par l'utilisateur
+
+    LoginRequest:
+      type: object
+      required: [password]
+      properties:
+        identifier:
+          type: string
+          description: Email ou username. Prioritaire si plusieurs champs sont fournis.
+        email:
+          type: string
+          format: email
+          description: Compatibilité ascendante. Utilisé si `identifier` est absent.
+        username:
+          type: string
+          description: Alternative au champ `email`. Utilisé si `identifier` et `email` sont absents.
+        password:
+          type: string
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+
+    LogoutRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+
+    AuthResponse:
+      type: object
+      required: [accessToken, refreshToken]
+      properties:
+        accessToken:
+          type: string
+          description: JWT signé
+        refreshToken:
+          type: string
+          description: Token opaque stocké côté serveur sous forme de hash
+
+    RequestPasswordResetRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+
+    ResetPasswordRequest:
+      type: object
+      required: [token, password]
+      properties:
+        token:
+          type: string
+          description: Token reçu par email (usage unique)
+        password:
+          type: string
+          minLength: 8
+          maxLength: 72
+          description: Nouveau mot de passe avec au moins une minuscule, une majuscule, un chiffre et un caractère spécial
+
+    ChangePasswordRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+        newPassword:
+          type: string
+          minLength: 8
+          maxLength: 72
+          description: Nouveau mot de passe avec au moins une minuscule, une majuscule, un chiffre et un caractère spécial
+
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        displayName:
+          type: string
+          maxLength: 50
+        pronouns:
+          type: string
+          maxLength: 50
+        bio:
+          type: string
+          maxLength: 160
+        isPrivate:
+          type: boolean
+          description: Bascule le compte en privé/public
+
+    CreatePostRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 280
+        tags:
+          type: array
+          items:
+            type: string
+
+    UpdatePostRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 280
+
+    CreateCommentRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          minLength: 1
+          maxLength: 280
+        parentCommentId:
+          allOf:
+            - $ref: '#/components/schemas/CommentId'
+          nullable: true
+
+    LikeResponse:
+      type: object
+      required: [likesCount, likedByMe]
+      properties:
+        likesCount:
+          type: integer
+        likedByMe:
+          type: boolean
+
+    PaginatedPosts:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Post'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    PaginatedComments:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Comment'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    PaginatedUsers:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserSummary'
+        pagination:
+          $ref: '#/components/schemas/Pagination'

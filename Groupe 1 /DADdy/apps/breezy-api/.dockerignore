@@ -1,0 +1,6 @@
+bin
+*.log
+.git
+.dockerignore
+Dockerfile
+README.md

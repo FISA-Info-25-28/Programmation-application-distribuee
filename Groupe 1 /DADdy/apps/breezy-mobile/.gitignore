@@ -1,0 +1,7 @@
+capacitor.config.js
+
+# Logs
+*.log
+
+# Dist web bundlé par Capacitor (généré à chaque build)
+dist/

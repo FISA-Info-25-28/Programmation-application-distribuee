@@ -1,0 +1,19 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: daddy-sse
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`api.breezy.ecadiere.fr`) && PathPrefix(`/notifications/stream`)
+      kind: Rule
+      priority: 100
+      services:
+        - name: api-gateway
+          port: 3001
+          responseForwarding:
+            flushInterval: -1ms
+          serversTransport: sse-transport
+  tls:
+    secretName: daddy-tls

@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: daddy-dev
+  namespace: argocd
+spec:
+  project: daddy
+  source:
+    repoURL: https://github.com/enzo-cadiere/DADdy.git
+    targetRevision: develop
+    path: .kubernetes/apps/daddy/overlays/dev
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: daddy-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

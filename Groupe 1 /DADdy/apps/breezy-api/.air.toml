@@ -1,0 +1,17 @@
+# Hot-reload pour les services Go (utilisé via compose target: dev).
+# Le service à compiler est fourni par compose dans $SERVICE
+# (core-api | user-service | api-gateway). Le binaire va dans /build
+# (volume anonyme monté par compose) car /tmp est monté noexec.
+root = "."
+tmp_dir = "/build"
+
+[build]
+cmd = "go build -o /build/server ./$SERVICE"
+bin = "/build/server"
+delay = 200
+include_ext = ["go"]
+exclude_dir = ["spec", "bin", "tmp"]
+stop_on_error = true
+
+[misc]
+clean_on_exit = true

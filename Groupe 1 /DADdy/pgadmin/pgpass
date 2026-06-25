@@ -1,0 +1,3 @@
+core-db:5432:core:core_user:change-me-core
+user-db:5432:users:user_user:change-me-user
+auth-db:5432:auth:auth_user:change-me-auth

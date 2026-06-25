@@ -1,0 +1,34 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "core-db",
+      "Group": "DADdy",
+      "Host": "core-db",
+      "Port": 5432,
+      "MaintenanceDB": "core",
+      "Username": "core_user",
+      "Password": "change-me-core",
+      "SSLMode": "prefer"
+    },
+    "2": {
+      "Name": "user-db",
+      "Group": "DADdy",
+      "Host": "user-db",
+      "Port": 5432,
+      "MaintenanceDB": "users",
+      "Username": "user_user",
+      "Password": "change-me-user",
+      "SSLMode": "prefer"
+    },
+    "3": {
+      "Name": "auth-db",
+      "Group": "DADdy",
+      "Host": "auth-db",
+      "Port": 5432,
+      "MaintenanceDB": "auth",
+      "Username": "auth_user",
+      "Password": "change-me-auth",
+      "SSLMode": "prefer"
+    }
+  }
+}

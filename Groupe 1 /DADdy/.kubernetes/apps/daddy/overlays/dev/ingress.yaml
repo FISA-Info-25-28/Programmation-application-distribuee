@@ -1,0 +1,47 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: daddy
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+    external-dns.alpha.kubernetes.io/target: "82.96.173.175"
+    traefik.ingress.kubernetes.io/router.middlewares: daddy-dev-sse-headers@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - app-dev.breezy.ecadiere.fr
+        - api-dev.breezy.ecadiere.fr
+        - media-dev.breezy.ecadiere.fr
+      secretName: daddy-dev-tls
+  rules:
+    - host: app-dev.breezy.ecadiere.fr
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: breezy-web
+                port:
+                  number: 80
+    - host: api-dev.breezy.ecadiere.fr
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 3001
+    - host: media-dev.breezy.ecadiere.fr
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minio
+                port:
+                  number: 9000

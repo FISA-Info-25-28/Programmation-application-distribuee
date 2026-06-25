@@ -1,0 +1,205 @@
+services:
+  web:
+    build:
+      target: dev
+    environment:
+      VITE_API_PROXY_TARGET: http://api-gateway:3001
+    ports: !override
+      - "5173:5173"
+    volumes:
+      - ./apps/breezy-web:/app/apps/breezy-web
+      - ./packages/breezy-shared:/app/packages/breezy-shared
+      - /app/node_modules
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:5173/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+      start_interval: 2s   # sonde toutes les 2s pendant le start_period
+
+  # Valkey : exposé en local pour inspection (valkey-cli / GUI).
+  cache:
+    ports:
+      - "6379:6379"
+
+  # ── services Go : hot-reload via air ──
+  # build.target=dev + montage du code → recompilation auto à chaque sauvegarde.
+  # read_only désactivé en dev (air a besoin d'écrire le binaire et les caches).
+  # Les services partagent la MÊME image dev + les MÊMES caches Go nommés
+  # (go-build-cache / go-mod-cache) → compilation mutualisée et incrémentale.
+  core-api:
+    build:
+      target: dev
+    environment:
+      SERVICE: core-api
+    read_only: false
+    deploy:   # 128M (prod) tue le compilateur Go → on relève en dev
+      resources:
+        limits:
+          memory: 2048M
+    healthcheck:   # le binaire /app/healthcheck n'existe pas en dev → check HTTP
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3101/health || exit 1"]
+      start_period: 180s   # 1ʳᵉ compilation à froid (cache vide) peut être longue
+      start_interval: 2s   # mais dès que prêt → healthy en ~2s (cache chaud)
+    volumes:
+      - ./apps/breezy-api:/src
+      - /build               # binaire compilé (volume anonyme, exec autorisé)
+      - go-build-cache:/root/.cache/go-build
+      - go-mod-cache:/go/pkg/mod
+
+  user-service:
+    build:
+      target: dev
+    environment:
+      SERVICE: user-service
+      MINIO_PUBLIC_URL: "${MINIO_PUBLIC_URL:-http://localhost:9000}"
+    read_only: false
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    ports:
+      - "3102:3102"   # exposé pour tester en direct (curl + header X-User-Id)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3102/health || exit 1"]
+      start_period: 180s   # 1ʳᵉ compilation à froid (cache vide) peut être longue
+      start_interval: 2s   # mais dès que prêt → healthy en ~2s (cache chaud)
+    volumes:
+      - ./apps/breezy-api:/src
+      - /build               # binaire compilé (volume anonyme, exec autorisé)
+      - go-build-cache:/root/.cache/go-build
+      - go-mod-cache:/go/pkg/mod
+
+  # Mailpit : serveur SMTP de dev qui capture les mails (UI http://localhost:8025).
+  # Aucun mail ne part réellement : on inspecte les liens de vérification dans l'UI.
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "8025:8025"   # interface web
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  auth-service:
+    build:
+      target: dev
+    environment:
+      SERVICE: auth-service
+      # Envoi des mails de vérification vers Mailpit (port SMTP 1025, sans auth/TLS).
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      APP_BASE_URL: http://localhost:5173
+    depends_on:
+      mailpit:
+        condition: service_healthy
+    read_only: false
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3104/health || exit 1"]
+      start_period: 180s   # 1ʳᵉ compilation à froid (cache vide) peut être longue
+      start_interval: 2s   # mais dès que prêt → healthy en ~2s (cache chaud)
+    volumes:
+      - ./apps/breezy-api:/src
+      - /build               # binaire compilé (volume anonyme, exec autorisé)
+      - go-build-cache:/root/.cache/go-build
+      - go-mod-cache:/go/pkg/mod
+
+  post-service:
+    build:
+      target: dev
+    environment:
+      SERVICE: post-service
+      MINIO_PUBLIC_URL: "${MINIO_PUBLIC_URL:-http://localhost:9000}"
+    read_only: false
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3103/health || exit 1"]
+      start_period: 180s   # 1ʳᵉ compilation à froid (cache vide) peut être longue
+      start_interval: 2s   # mais dès que prêt → healthy en ~2s (cache chaud)
+    volumes:
+      - ./apps/breezy-api:/src
+      - /build               # binaire compilé (volume anonyme, exec autorisé)
+      - go-build-cache:/root/.cache/go-build
+      - go-mod-cache:/go/pkg/mod
+
+  message-service:
+    build:
+      target: dev
+    environment:
+      SERVICE: message-service
+    read_only: false
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3105/health || exit 1"]
+      start_period: 180s   # 1ʳᵉ compilation à froid (cache vide) peut être longue
+      start_interval: 2s   # mais dès que prêt → healthy en ~2s (cache chaud)
+    volumes:
+      - ./apps/breezy-api:/src
+      - /build               # binaire compilé (volume anonyme, exec autorisé)
+      - go-build-cache:/root/.cache/go-build
+      - go-mod-cache:/go/pkg/mod
+
+  notif-service:
+    build:
+      target: dev
+    environment:
+      SERVICE: notification-service
+    read_only: false
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3106/health || exit 1"]
+      start_period: 180s   # 1ʳᵉ compilation à froid (cache vide) peut être longue
+      start_interval: 2s   # mais dès que prêt → healthy en ~2s (cache chaud)
+    volumes:
+      - ./apps/breezy-api:/src
+      - /build
+      - go-build-cache:/root/.cache/go-build
+      - go-mod-cache:/go/pkg/mod
+
+  api-gateway:
+    build:
+      target: dev
+    environment:
+      SERVICE: api-gateway
+      # Rate limiting assoupli en dev : le seed crée beaucoup de comptes en
+      # rafale depuis la même IP (localhost). La prod (compose.yaml) garde 10/min.
+      RATE_LIMIT_AUTH_PER_MIN: ${RATE_LIMIT_AUTH_PER_MIN:-1000}
+      RATE_LIMIT_API_PER_MIN: ${RATE_LIMIT_API_PER_MIN:-1000}
+      CORS_ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173,http://localhost,capacitor://localhost"
+    read_only: false
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3001/health || exit 1"]
+      start_period: 180s   # 1ʳᵉ compilation à froid (cache vide) peut être longue
+      start_interval: 2s   # mais dès que prêt → healthy en ~2s (cache chaud)
+    volumes:
+      - ./apps/breezy-api:/src
+      - /build               # binaire compilé (volume anonyme, exec autorisé)
+      - go-build-cache:/root/.cache/go-build
+      - go-mod-cache:/go/pkg/mod
+
+volumes:
+  go-build-cache:
+  go-mod-cache:

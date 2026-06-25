@@ -1,0 +1,27 @@
+:root {
+  --color-accent: #0f766e;
+  --color-accent-content: #ffffff;
+  --color-background: #f8fafc;
+  --color-text: #0f172a;
+}
+
+body {
+  background: radial-gradient(circle at 20% -10%, #ccfbf1 0%, #f8fafc 45%);
+}
+
+.tsd-page-title {
+  background: linear-gradient(90deg, #0f766e 0%, #14b8a6 100%);
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.tsd-page-title h1,
+.tsd-page-title .tsd-breadcrumb {
+  color: #ffffff;
+}
+
+.tsd-navigation a.current {
+  color: #0f766e;
+  font-weight: 700;
+}

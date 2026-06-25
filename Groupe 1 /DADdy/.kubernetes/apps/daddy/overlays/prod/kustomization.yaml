@@ -1,0 +1,178 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: daddy
+
+resources:
+  - ../../base
+  - namespace.yaml
+  - ingress.yaml
+  - sse-ingressroute.yaml
+  - certificate.yaml
+  - secrets.yaml
+  - ghcr-sealed-secret.yaml
+  - smtp-sealed-secret.yaml
+  - google-oauth-sealed-secret.yaml
+  - github-oauth-sealed-secret.yaml
+
+images:
+  - name: daddy-api-gateway
+    newName: ghcr.io/enzo-cadiere/daddy/api-gateway
+    newTag: latest
+  - name: daddy-auth-service
+    newName: ghcr.io/enzo-cadiere/daddy/auth-service
+    newTag: latest
+  - name: daddy-core-api
+    newName: ghcr.io/enzo-cadiere/daddy/core-api
+    newTag: latest
+  - name: daddy-message-service
+    newName: ghcr.io/enzo-cadiere/daddy/message-service
+    newTag: latest
+  - name: daddy-notification-service
+    newName: ghcr.io/enzo-cadiere/daddy/notification-service
+    newTag: latest
+  - name: daddy-post-service
+    newName: ghcr.io/enzo-cadiere/daddy/post-service
+    newTag: latest
+  - name: daddy-user-service
+    newName: ghcr.io/enzo-cadiere/daddy/user-service
+    newTag: latest
+  - name: daddy-web
+    newName: ghcr.io/enzo-cadiere/daddy/web
+    newTag: latest
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: daddy-shared-config
+    patch: |-
+      - op: replace
+        path: /data/MINIO_PUBLIC_URL
+        value: https://media.breezy.ecadiere.fr
+      - op: add
+        path: /data/SMTP_HOST
+        value: smtp.gmail.com
+      - op: add
+        path: /data/SMTP_PORT
+        value: "587"
+      - op: add
+        path: /data/MAIL_FROM
+        value: "Breezy <breezycesi@gmail.com>"
+      - op: add
+        path: /data/APP_BASE_URL
+        value: https://app.breezy.ecadiere.fr
+      - op: add
+        path: /data/CORS_ALLOWED_ORIGINS
+        # capacitor://localhost = WKWebView iOS ; http://localhost = WebView Android.
+        value: https://app.breezy.ecadiere.fr,capacitor://localhost,http://localhost
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: ghcr-credentials
+  - target:
+      kind: Deployment
+      name: api-gateway
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: auth-service
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SMTP_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: daddy-smtp-secret
+              key: SMTP_USERNAME
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SMTP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: daddy-smtp-secret
+              key: SMTP_PASSWORD
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: GOOGLE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: daddy-google-oauth-secret
+              key: GOOGLE_CLIENT_ID
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: GOOGLE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: daddy-google-oauth-secret
+              key: GOOGLE_CLIENT_SECRET
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: GITHUB_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: daddy-github-oauth-secret
+              key: GITHUB_CLIENT_ID
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: GITHUB_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: daddy-github-oauth-secret
+              key: GITHUB_CLIENT_SECRET
+  - target:
+      kind: Deployment
+      name: user-service
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: core-api
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: post-service
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: message-service
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: notif-service
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+  - target:
+      kind: Deployment
+      name: breezy-web
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2

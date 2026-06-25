@@ -1,0 +1,546 @@
+---
+- name: Deploy a single-node K3s cluster on Debian 13
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    k3s_channel: stable
+    k3s_install_script_url: https://get.k3s.io
+    k3s_install_script_path: /tmp/install-k3s.sh
+    k3s_node_name: "{{ ansible_facts.hostname | default(inventory_hostname) }}"
+    k3s_api_advertise_address: "{{ ansible_host | default(inventory_hostname) }}"
+    k3s_tls_sans:
+      - "{{ k3s_api_advertise_address }}"
+      - "{{ inventory_hostname }}"
+    k3s_cluster_cidr: "10.42.0.0/16"
+    k3s_service_cidr: "10.43.0.0/16"
+    k3s_kubeconfig_remote_path: /etc/rancher/k3s/k3s.yaml
+    k3s_remote_admin_kubeconfig_path: /etc/rancher/k3s/k3s-admin.yaml
+    k3s_local_kubeconfig_path: "{{ lookup('env', 'HOME') }}/.kube/config"
+    k3s_disable_components: []
+    k3s_extra_server_args: []
+    kubectl_user: "{{ ansible_user | default(ansible_ssh_user) | default('debian') }}"
+    kubectl_user_home: "{{ '/root' if kubectl_user == 'root' else '/home/' + kubectl_user }}"
+    kubernetes_local_manifests_dir: "{{ playbook_dir }}/../../.kubernetes"
+    kubernetes_remote_manifests_dir: /opt/daddy/.kubernetes
+    kubernetes_apply_platform_bootstrap: true
+    kubernetes_apply_argocd_root_app: false
+    argocd_namespace: argocd
+    argocd_install_manifest_url: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    argocd_install_manifest_path: /tmp/argocd-install.yaml
+    k3s_server_exec: >-
+      server
+      --node-name={{ k3s_node_name }}
+      --node-ip={{ k3s_api_advertise_address }}
+      --advertise-address={{ k3s_api_advertise_address }}
+      --cluster-cidr={{ k3s_cluster_cidr }}
+      --service-cidr={{ k3s_service_cidr }}
+      --write-kubeconfig-mode=644
+      --disable-network-policy
+      {% for san in k3s_tls_sans | unique %} --tls-san={{ san }}{% endfor %}
+      {% for component in k3s_disable_components %} --disable={{ component }}{% endfor %}
+      {{ k3s_extra_server_args | join(' ') }}
+
+  pre_tasks:
+    - name: Ensure Python is installed for Ansible modules
+      ansible.builtin.raw: |
+        test -x /usr/bin/python3 || (apt-get update && apt-get install -y python3)
+      changed_when: false
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    - name: Ensure target is Debian 13
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == "Debian"
+          - ansible_facts.distribution_major_version | int == 13
+        fail_msg: "This playbook targets Debian 13. Detected {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}."
+
+  tasks:
+    - name: Install base packages
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - iproute2
+          - python3-apt
+          - tar
+        state: present
+        update_cache: true
+
+    - name: Disable swap immediately
+      ansible.builtin.command: swapoff -a
+      when: ansible_facts.swaptotal_mb | int > 0
+      changed_when: true
+
+    - name: Remove active swap entries from fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#]\S+\s+\S+\s+swap\s+.*)$'
+        replace: '# \1'
+
+    - name: Load Kubernetes kernel modules at boot
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Load overlay module
+      ansible.builtin.command: modprobe overlay
+      changed_when: false
+
+    - name: Load br_netfilter module
+      ansible.builtin.command: modprobe br_netfilter
+      changed_when: false
+
+    - name: Configure Kubernetes sysctl values
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes-cri.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward = 1
+      notify: Reload sysctl
+
+    - name: Apply runtime kernel settings before K3s install
+      ansible.builtin.meta: flush_handlers
+
+    - name: Check whether K3s is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    - name: Download K3s install script
+      ansible.builtin.get_url:
+        url: "{{ k3s_install_script_url }}"
+        dest: "{{ k3s_install_script_path }}"
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install K3s server
+      ansible.builtin.command: "{{ k3s_install_script_path }}"
+      environment:
+        INSTALL_K3S_CHANNEL: "{{ k3s_channel }}"
+        INSTALL_K3S_EXEC: "{{ k3s_server_exec }}"
+      register: k3s_install
+      changed_when: true
+
+    - name: Enable and start K3s
+      ansible.builtin.systemd:
+        name: k3s
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for K3s API server port
+      ansible.builtin.wait_for:
+        host: "{{ k3s_api_advertise_address }}"
+        port: 6443
+        timeout: 300
+
+    - name: Create K3s admin kubeconfig using VM IP
+      ansible.builtin.copy:
+        src: "{{ k3s_kubeconfig_remote_path }}"
+        dest: "{{ k3s_remote_admin_kubeconfig_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+        remote_src: true
+
+    - name: Point K3s admin kubeconfig at the VM IP
+      ansible.builtin.replace:
+        path: "{{ k3s_remote_admin_kubeconfig_path }}"
+        regexp: 'https://127\.0\.0\.1:6443'
+        replace: "https://{{ k3s_api_advertise_address }}:6443"
+
+    - name: Wait for K3s API readiness
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} get --raw=/readyz
+      register: k3s_readyz
+      changed_when: false
+      failed_when: false
+      retries: 60
+      delay: 5
+      until: k3s_readyz.rc == 0
+
+    - name: Wait for K3s API to stay stable
+      ansible.builtin.shell: |
+        set -eu
+        for _ in $(seq 1 12); do
+          k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} get --raw=/readyz >/dev/null
+          sleep 5
+        done
+      args:
+        executable: /bin/bash
+      register: k3s_stable_readyz
+      changed_when: false
+      failed_when: false
+      retries: 6
+      delay: 5
+      until: k3s_stable_readyz.rc == 0
+
+    - name: Read K3s status when API readiness fails
+      ansible.builtin.command: systemctl status k3s --no-pager
+      register: k3s_status
+      changed_when: false
+      failed_when: false
+      when: k3s_readyz.rc != 0 or k3s_stable_readyz.rc != 0
+
+    - name: Read K3s logs when API readiness fails
+      ansible.builtin.command: journalctl -u k3s -n 160 --no-pager
+      register: k3s_logs
+      changed_when: false
+      failed_when: false
+      when: k3s_readyz.rc != 0 or k3s_stable_readyz.rc != 0
+
+    - name: Print K3s status when API readiness fails
+      ansible.builtin.debug:
+        var: k3s_status.stdout_lines
+      when: k3s_readyz.rc != 0 or k3s_stable_readyz.rc != 0
+
+    - name: Print K3s logs when API readiness fails
+      ansible.builtin.debug:
+        var: k3s_logs.stdout_lines
+      when: k3s_readyz.rc != 0 or k3s_stable_readyz.rc != 0
+
+    - name: Fail if K3s API is not ready
+      ansible.builtin.fail:
+        msg: |
+          K3s API did not stay ready on {{ k3s_api_advertise_address }}:6443.
+
+          /readyz first check stderr:
+          {{ k3s_readyz.stderr | default('') }}
+
+          /readyz stability check stdout:
+          {{ k3s_stable_readyz.stdout | default('') }}
+
+          /readyz stability check stderr:
+          {{ k3s_stable_readyz.stderr | default('') }}
+
+          systemctl status k3s:
+          {{ k3s_status.stdout | default('') }}
+
+          journalctl -u k3s:
+          {{ k3s_logs.stdout | default('') }}
+      when: k3s_readyz.rc != 0 or k3s_stable_readyz.rc != 0
+
+    - name: Wait for K3s node to be Ready
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} wait --for=condition=Ready node --all --timeout=300s
+      register: k3s_wait_nodes
+      changed_when: false
+      failed_when: false
+      retries: 12
+      delay: 10
+      until: k3s_wait_nodes.rc == 0
+
+    - name: Show K3s nodes
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} get nodes -o wide
+      register: k3s_nodes
+      changed_when: false
+      failed_when: false
+      retries: 12
+      delay: 10
+      until: k3s_nodes.rc == 0
+
+    - name: Read K3s status when node listing fails
+      ansible.builtin.command: systemctl status k3s --no-pager
+      register: k3s_node_status
+      changed_when: false
+      failed_when: false
+      when: k3s_nodes.rc != 0
+
+    - name: Read K3s logs when node listing fails
+      ansible.builtin.command: journalctl -u k3s -n 200 --no-pager
+      register: k3s_node_logs
+      changed_when: false
+      failed_when: false
+      when: k3s_nodes.rc != 0
+
+    - name: Print K3s status when node listing fails
+      ansible.builtin.debug:
+        var: k3s_node_status.stdout_lines
+      when: k3s_nodes.rc != 0
+
+    - name: Print K3s logs when node listing fails
+      ansible.builtin.debug:
+        var: k3s_node_logs.stdout_lines
+      when: k3s_nodes.rc != 0
+
+    - name: Fail if K3s nodes cannot be listed
+      ansible.builtin.fail:
+        msg: "K3s API became unavailable while listing nodes. See K3s status and logs above."
+      when: k3s_nodes.rc != 0
+
+    - name: Print K3s nodes
+      ansible.builtin.debug:
+        var: k3s_nodes.stdout_lines
+
+    - name: Ensure kubectl config directory exists for admin user
+      ansible.builtin.file:
+        path: "{{ kubectl_user_home }}/.kube"
+        state: directory
+        owner: "{{ kubectl_user }}"
+        group: "{{ kubectl_user }}"
+        mode: "0700"
+
+    - name: Install kubectl config for admin user
+      ansible.builtin.copy:
+        src: "{{ k3s_remote_admin_kubeconfig_path }}"
+        dest: "{{ kubectl_user_home }}/.kube/config"
+        owner: "{{ kubectl_user }}"
+        group: "{{ kubectl_user }}"
+        mode: "0600"
+        remote_src: true
+
+    - name: Ensure local kubectl config directory exists
+      ansible.builtin.file:
+        path: "{{ k3s_local_kubeconfig_path | dirname }}"
+        state: directory
+        mode: "0700"
+      become: false
+      delegate_to: localhost
+
+    - name: Copy K3s admin kubeconfig to local kubectl config
+      ansible.builtin.fetch:
+        src: "{{ k3s_remote_admin_kubeconfig_path }}"
+        dest: "{{ k3s_local_kubeconfig_path }}"
+        flat: true
+      become: true
+
+    - name: Restrict local kubectl config permissions
+      ansible.builtin.file:
+        path: "{{ k3s_local_kubeconfig_path }}"
+        mode: "0600"
+      become: false
+      delegate_to: localhost
+
+    - name: Ensure remote Kubernetes manifest directory exists
+      ansible.builtin.file:
+        path: "{{ kubernetes_remote_manifests_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Copy local Kubernetes manifests to the VM
+      ansible.builtin.copy:
+        src: "{{ kubernetes_local_manifests_dir }}/"
+        dest: "{{ kubernetes_remote_manifests_dir }}/"
+        owner: root
+        group: root
+        mode: preserve
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Create Argo CD namespace
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} create namespace {{ argocd_namespace }}
+      register: argocd_namespace_create
+      changed_when: "'created' in argocd_namespace_create.stdout"
+      failed_when:
+        - argocd_namespace_create.rc != 0
+        - "'AlreadyExists' not in argocd_namespace_create.stderr"
+      retries: 12
+      delay: 5
+      until: argocd_namespace_create.rc == 0 or 'AlreadyExists' in argocd_namespace_create.stderr
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Download Argo CD install manifest on controller
+      ansible.builtin.get_url:
+        url: "{{ argocd_install_manifest_url }}"
+        dest: "{{ argocd_install_manifest_path }}"
+        mode: "0644"
+      become: false
+      delegate_to: localhost
+      run_once: true
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Copy Argo CD install manifest to VM
+      ansible.builtin.copy:
+        src: "{{ argocd_install_manifest_path }}"
+        dest: "{{ argocd_install_manifest_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Install Argo CD
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} apply --server-side --force-conflicts -n {{ argocd_namespace }} -f {{ argocd_install_manifest_path }}
+      register: argocd_install
+      changed_when: "'created' in argocd_install.stdout or 'configured' in argocd_install.stdout"
+      retries: 12
+      delay: 10
+      until: argocd_install.rc == 0
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Wait for Argo CD Application CRD
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} wait --for=condition=Established crd/applications.argoproj.io --timeout=300s
+      changed_when: false
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Wait for Argo CD application controller
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} rollout status statefulset/argocd-application-controller -n {{ argocd_namespace }} --timeout=300s
+      changed_when: false
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Wait for Argo CD core deployments
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} rollout status deployment/{{ item }} -n {{ argocd_namespace }} --timeout=300s
+      changed_when: false
+      loop:
+        - argocd-applicationset-controller
+        - argocd-dex-server
+        - argocd-notifications-controller
+        - argocd-redis
+        - argocd-repo-server
+        - argocd-server
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Apply Argo CD project
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} apply --validate=false -f {{ kubernetes_remote_manifests_dir }}/argocd/project.yaml
+      register: argocd_project_apply
+      changed_when: "'created' in argocd_project_apply.stdout or 'configured' in argocd_project_apply.stdout"
+      when: kubernetes_apply_platform_bootstrap | bool or kubernetes_apply_argocd_root_app | bool
+
+    - name: Apply platform namespaces
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} apply --validate=false -f {{ kubernetes_remote_manifests_dir }}/platform/bootstrap/shared/namespaces.yaml
+      register: platform_namespaces_apply
+      changed_when: "'created' in platform_namespaces_apply.stdout or 'configured' in platform_namespaces_apply.stdout"
+      when: kubernetes_apply_platform_bootstrap | bool
+
+    - name: Apply Sealed Secrets Argo CD application
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} apply --validate=false -f {{ kubernetes_remote_manifests_dir }}/platform/bootstrap/shared/{{ item }}
+      register: sealed_secrets_app_apply
+      changed_when: "'created' in sealed_secrets_app_apply.stdout or 'configured' in sealed_secrets_app_apply.stdout"
+      loop:
+        - sealed-secrets.yaml
+      when: kubernetes_apply_platform_bootstrap | bool
+
+    - name: Wait for Sealed Secrets CRD
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} wait --for=condition=Established crd/sealedsecrets.bitnami.com --timeout=30s
+      register: sealed_secrets_crd_wait
+      changed_when: false
+      failed_when: false
+      retries: 20
+      delay: 15
+      until: sealed_secrets_crd_wait.rc == 0
+      when: kubernetes_apply_platform_bootstrap | bool
+
+    - name: Fail if Sealed Secrets CRD never became established
+      ansible.builtin.fail:
+        msg: "Sealed Secrets CRD was not established within the timeout. Check ArgoCD sync status for the sealed-secrets application."
+      when:
+        - kubernetes_apply_platform_bootstrap | bool
+        - sealed_secrets_crd_wait.rc != 0
+
+    - name: Apply platform bootstrap sealed secrets
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} apply --validate=false -f {{ kubernetes_remote_manifests_dir }}/platform/bootstrap/shared/{{ item }}
+      register: platform_secret_apply
+      changed_when: "'created' in platform_secret_apply.stdout or 'configured' in platform_secret_apply.stdout"
+      loop:
+        - route53-credentials-sealedsecret.yaml
+        - external-dns-credentials-sealedsecret.yaml
+      when: kubernetes_apply_platform_bootstrap | bool
+
+    - name: Apply base platform Argo CD applications
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} apply --validate=false -f {{ kubernetes_remote_manifests_dir }}/platform/bootstrap/shared/{{ item }}
+      register: platform_app_apply
+      changed_when: "'created' in platform_app_apply.stdout or 'configured' in platform_app_apply.stdout"
+      loop:
+        - cert-manager.yaml
+        - external-dns.yaml
+      when: kubernetes_apply_platform_bootstrap | bool
+
+    - name: Wait for cert-manager ClusterIssuer CRD
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} wait --for=condition=Established crd/clusterissuers.cert-manager.io --timeout=30s
+      register: clusterissuer_crd_wait
+      changed_when: false
+      failed_when: false
+      retries: 20
+      delay: 30
+      until: clusterissuer_crd_wait.rc == 0
+      when: kubernetes_apply_platform_bootstrap | bool
+
+    - name: Read cert-manager Argo CD application when CRD wait fails
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} get application cert-manager -n {{ argocd_namespace }} -o yaml
+      register: cert_manager_application_status
+      changed_when: false
+      failed_when: false
+      when:
+        - kubernetes_apply_platform_bootstrap | bool
+        - clusterissuer_crd_wait.rc != 0
+
+    - name: Read cert-manager pods when CRD wait fails
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} get pods -n cert-manager -o wide
+      register: cert_manager_pods
+      changed_when: false
+      failed_when: false
+      when:
+        - kubernetes_apply_platform_bootstrap | bool
+        - clusterissuer_crd_wait.rc != 0
+
+    - name: Print cert-manager Argo CD application when CRD wait fails
+      ansible.builtin.debug:
+        var: cert_manager_application_status.stdout_lines
+      when:
+        - kubernetes_apply_platform_bootstrap | bool
+        - clusterissuer_crd_wait.rc != 0
+
+    - name: Print cert-manager pods when CRD wait fails
+      ansible.builtin.debug:
+        var: cert_manager_pods.stdout_lines
+      when:
+        - kubernetes_apply_platform_bootstrap | bool
+        - clusterissuer_crd_wait.rc != 0
+
+    - name: Fail if cert-manager ClusterIssuer CRD never became established
+      ansible.builtin.fail:
+        msg: "cert-manager ClusterIssuer CRD was not established within the timeout. Check ArgoCD sync status for the cert-manager application."
+      when:
+        - kubernetes_apply_platform_bootstrap | bool
+        - clusterissuer_crd_wait.rc != 0
+
+    - name: Apply cert-manager ClusterIssuers
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} apply --validate=false -f {{ kubernetes_remote_manifests_dir }}/platform/bootstrap/shared/{{ item }}
+      register: clusterissuer_apply
+      changed_when: "'created' in clusterissuer_apply.stdout or 'configured' in clusterissuer_apply.stdout"
+      loop:
+        - letsencrypt-staging-issuer.yaml
+        - letsencrypt-production-issuer.yaml
+      when: kubernetes_apply_platform_bootstrap | bool
+
+    - name: Apply Argo CD root application
+      ansible.builtin.command:
+        cmd: k3s kubectl --kubeconfig {{ k3s_remote_admin_kubeconfig_path }} apply --validate=false -f {{ kubernetes_remote_manifests_dir }}/argocd/root-application.yaml
+      register: argocd_root_apply
+      changed_when: "'created' in argocd_root_apply.stdout or 'configured' in argocd_root_apply.stdout"
+      when: kubernetes_apply_argocd_root_app | bool
+
+  handlers:
+    - name: Reload sysctl
+      ansible.builtin.command: sysctl --system

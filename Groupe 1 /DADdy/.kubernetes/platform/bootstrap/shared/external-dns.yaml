@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-dns
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: daddy
+  source:
+    repoURL: https://kubernetes-sigs.github.io/external-dns/
+    chart: external-dns
+    targetRevision: 1.21.1
+    helm:
+      values: |
+        provider:
+          name: aws
+        policy: upsert-only
+        registry: txt
+        txtOwnerId: breezy-ecadiere-fr
+        sources:
+          - ingress
+        env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: external-dns-aws-credentials
+                key: EXTERNAL_DNS_AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: external-dns-aws-credentials
+                key: EXTERNAL_DNS_AWS_SECRET_ACCESS_KEY
+          - name: AWS_DEFAULT_REGION
+            value: eu-west-3
+        extraArgs:
+          - --aws-zone-type=public
+          - --txt-prefix=external-dns-
+          - --zone-id-filter=Z05417091TMRI4DEQURHY
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-dns
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
